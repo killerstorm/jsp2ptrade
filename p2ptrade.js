@@ -1,13 +1,53 @@
 (function () {
 
-     var mockComm = {
-         postMessage : function (o) { console.log(o);}
+     function log_event(ekind, msg) {
+         console.log("Event: " + ekind + " Msg:" + msg);
+     }
+
+     function MockExchangeTransaction (wallet, data) {
+         this.wallet = wallet;
+         this.data = data;
+     }
+     MockExchangeTransaction.prototype.checkOutputsToMe = function (myaddress, color, value) {
+         return true;
      };
+     MockExchangeTransaction.prototype.signMyInputs = function () {
+         return true;
+     };
+     MockExchangeTransaction.prototype.broadcast = function () {
+         log_event("MockExchangeTransaction.broadcast");
+         return true;
+     };
+     MockExchangeTransaction.prototype.hasEnoughSignatures = function (){
+         return true;
+     };
+     MockExchangeTransaction.prototype.getData = function () {
+         return {};
+     };
+     
+
      var mockWallet = {
-         getSomeAddress : function () {
+         getAddress : function (colorid, is_change) {
              return "111111111";
-         }       
+         },
+         createPayment : function (color, amount, to_address) {
+             return new MockExchangeTransaction(this, 
+                                                {my_tranche: 
+                                                 {
+                                                     color:color,
+                                                     amount: amount,
+                                                     to_address: to_address
+                                                 }});
+         },
+         importTx : function (tx_data) {
+             return new MockExchangeTransaction(this, {imported_data: tx_data});
+         },
+         mergeTxs : function (etx1, etx2) {
+             return new MockExchangeTransaction(this, {etx1: etx1, etx2: etx2});
+         }
      };
+
+     
 
      function now () {
          return Math.round((new Date()).getTime()/1000);
@@ -30,9 +70,9 @@
          // ie. offerer says "I want to give you A['value'] coins of color 
          // A['colorid'] and receive B['value'] coins of color B['colorid']"
 
-         if (!A) 
-             return; //empty object
          if (oid == null) {
+             if (!A) 
+                 return; //empty object
              oid = make_random_id();
          } else if (typeof oid == 'object') {
              A = $.extend(true, {}, oid.A);
@@ -60,8 +100,9 @@
      };
      ExchangeOffer.prototype.matches = function (offer) {
          // cross match A -> B, B -> A.
+         var self = this;
          function prop_matches(name) {
-             return (this.A[name] == offer.B[name]) && (this.B[name] == offer.A[name]);
+             return (self.A[name] == offer.B[name]) && (self.B[name] == offer.A[name]);
          }
          return prop_matches('value') && prop_matches('colorid');
      };
@@ -70,9 +111,10 @@
              return false;
          if (my_offer.B.address && my_offer.B.address != this.B.address)
              return false;
+         var self = this;
          function checkprop (name) {
-             if (this.A[name] != my_offer.A[name]) return false;
-             if (this.B[name] != my_offer.B[name]) return false;
+             if (self.A[name] != my_offer.A[name]) return false;
+             if (self.B[name] != my_offer.B[name]) return false;
              return true;
          }
          if (!checkprop('colorid')) return false;
@@ -82,34 +124,18 @@
      
      function MyExchangeOffer (oid, A, B, auto_post){
          ExchangeOffer.apply(this, arguments);
-         this.auto_post = (auto_post == false) ? false : true;
+         this.auto_post = (auto_post === false) ? false : true;
      };
      MyExchangeOffer.prototype = new ExchangeOffer();
 
-     
-     function MyTranche () {
+    
+     function ExchangeProposal (wallet) {
+         this.wallet = wallet;
      }
-     MyTranche.prototype.createPayment = function (wallet, color, amount, to_address) {
-         var p = new MyTranche();
-         // TODO
-         return this;
-     };
-
-
-     function ExchangeTransaction (txdata) {
-         //TODO
-     }
-     ExchangeTransaction.prototype.addMyTranche = function (my_tranche) {}; //TODO
-     ExchangeTransaction.prototype.addTx = function (txdata, uncolored) {}; //TODO
-     ExchangeTransaction.prototype.getData = function () {}; //TODO
-
-     function ExchangeProposal () {}
-     ExchangeProposal.prototype.createNew = function (offer, my_tranch, my_offer) {
+     ExchangeProposal.prototype.createNew = function (offer, etx, my_offer) {
          this.pid = make_random_id();
          this.offer = offer;
-         this.my_tranche = my_tranche;
-         this.etransaction = new ExchangeTransaction();
-         this.etransaction.addMyTranche(this.my_tranche);
+         this.etx = etx;
          this.my_offer = my_offer;
          this.state = 'proposed';
      };
@@ -117,35 +143,32 @@
          return {
              pid: this.pid,
              offer: this.offer.getData(),
-             tx: this.etransaction.getData()
+             tx: this.etx.getData()
          };
      };
      ExchangeProposal.prototype.importTheirs = function (data) {
          this.pid = data.pid;
          this.offer = new ExchangeOffer(data.offer);
-         this.etransaction = new ExchangeTransaction(data.tx);
-         this.my_tranche = null;
+         this.etx = this.wallet.importTx(data.tx_data);
          this.my_offer = null;
          this.state = 'imported';
      };
-     ExchangeProposal.prototype.addMyTranche = function (my_tranche) {
-         this.my_tranche = my_tranche;
-         this.etransaction.addMyTranche(my_tranche);
+     ExchangeProposal.prototype.mergeWithTx = function (etx) {
+         this.etx = this.wallet.mergeTxs(this.etx, etx);
      };
      ExchangeProposal.prototype.checkOutputsToMe = function (myaddress, color, value) {
          /*  Does their tranche have enough of the color
           that I want going to my address? */
-         // TODO         
+         return this.etx.checkOutputsToMe(myaddress, color, value);
      };
-     ExchangeProposal.prototype.signMyTranche = function (wallet) {
-         //TODO
+     ExchangeProposal.prototype.signMyInputs = function () {
+         return this.etx.signMyInputs();
      };
      
 
-
      function  resolveColor(colorid) {
-         //TODO
-         //throw if unknown
+         //TODO: barf if colorid is not recognized
+         return colorid;
      }
      
      function ExchangePeerAgent(wallet, comm) {
@@ -159,15 +182,17 @@
          this.onCompleteTrade = function () {};
      };
      ExchangePeerAgent.prototype.setActiveEP = function (ep) {
+         this.active_ep = ep;
          if (ep == null) {
              this.ep_timeout = null;
              this.match_orders = true;
          } else {
-             this.ep_timeout = new Date((new Date).UTC() + STANDARD_OFFER_EXPIRY_INTERVAL);
+             this.ep_timeout = now() + STANDARD_OFFER_EXPIRY_INTERVAL;
          }
+         
      };
      ExchangePeerAgent.prototype.hasActiveEP = function () {
-         if (this.ep_timeout && this.ep_timeout < new Date()) {
+         if (this.ep_timeout && this.ep_timeout < now()) {
              this.setActiveEP(null); //TODO: cleanup?
              return false;
          } else 
@@ -187,7 +212,7 @@
      ExchangePeerAgent.prototype.serviceTheirOffers = function () {
          for (var oid in this.their_offers) {
              var offer = this.their_offers[oid];
-             if (offer.expired(-STANDARD_OFFER_GRACE_INTERVAL))
+             if (offer.expired(-STANDARD_OFFER_VALIDITY_INTERVAL))
                  delete this.their_offers[oid];
          }       
      };
@@ -201,8 +226,13 @@
      };
      ExchangePeerAgent.prototype.registerMyOffer = function (offer) {
          if (!offer.A.address)
-             offer.A.address = this.wallet.getSomeAddress();
+             offer.A.address = this.wallet.getAddress(resolveColor(offer.A.colorid), false);
          this.my_offers[offer.oid] = offer;
+         this.match_offers = true;
+     };
+     ExchangePeerAgent.prototype.registerTheirOffer = function (offer) {
+         this.their_offers[offer.oid] = offer;
+         offer.refresh();
          this.match_offers = true;
      };
      ExchangePeerAgent.prototype.cancelMyOffer = function (offer) {
@@ -215,6 +245,7 @@
 
      };
      ExchangePeerAgent.prototype.matchOffers = function () {
+         log_event("ExchangePeerAgent.matchOffers");     
          if (this.hasActiveEP())
              return;
          for (var my_oid in this.my_offers) {
@@ -227,7 +258,7 @@
                          this.makeExchangeProposal(their_offer, my_offer.A.address, my_offer.A.value, my_offer);
                          success = true;
                      } catch (x) {
-                         // TODO
+                         log_event("error", "error in makeExchangeProposal called from matchOffers");
                      }
                      if (success) return;
                  }
@@ -235,6 +266,7 @@
          }
      };
      ExchangePeerAgent.prototype.makeExchangeProposal = function (orig_offer, my_address, my_value, related_offer) {
+         log_event("ExchangePeerAgent.makeExchangeProposal");
          if (this.hasActiveEP()) 
              throw "already have active EP (in makeExchangeProposal)";
          var offer = new ExchangeOffer(orig_offer);
@@ -247,16 +279,18 @@
                  my_address = this.wallet.getSomeAddress();
          }
          offer.B.address = my_address;
-         var acolor = resolveColor(offer.A.color);
-         var bcolor = resolveColor(offer.B.color);
-         var my_tranche = (new MyTranche()).createPayment(this.wallet, bcolor, my_value, offer.A.address);
-         var ep = new ExchangeProposal();
-         ep.createNew(offer, my_tranche, related_offer);
+         var acolor = resolveColor(offer.A.colorid);
+         var bcolor = resolveColor(offer.B.colorid);
+         var ep = new ExchangeProposal(this.wallet);
+         ep.createNew(offer, 
+                      this.wallet.createPayment(bcolor, my_value, offer.A.address),
+                      related_offer);
          this.setActiveEP(ep);
          this.postMessage(ep);
      };
      ExchangePeerAgent.prototype.dispatchExchangeProposal = function (ep_data) {
-         var ep = new ExchangeProposal();
+         log_event("ExchangePeerAgent.dispatchExchangeProposal");
+         var ep = new ExchangeProposal(this.wallet);
          ep.importTheirs(ep_data);
          if (this.hasActiveEP()) {
              if (ep.pid == this.active_ep.pid)
@@ -274,6 +308,7 @@
         return null;
      };
      ExchangePeerAgent.prototype.acceptExchangeProposal = function (ep) {
+         log_event("ExchangePeerAgent.acceptExchangeProposal", ep.pid);
          if (this.hasActiveEP()) return;
          var offer = ep.offer;
          var my_offer = this.my_offers[offer.oid];
@@ -283,10 +318,8 @@
          var bcolor = resolveColor(offer.B.colorid);
          if (!ep.checkOutputsToMe(offer.A.address, bcolor, offer.B.value))
              throw "Offer does not pay enough coins of the color I want to me";
-         var my_tranche = new MyTranche();
-         my_tranche.createPayment(this.wallet, acolor, offer.A.value, offer.B.address);
-         ep.addMyTranche(my_tranche);
-         ep.signMyTranche(this.wallet);
+         ep.mergeWithTx(this.wallet.createPayment(acolor, offer.A.value, offer.B.address));
+         ep.signMyInputs();
          this.setActiveEP(ep);
          ep.state = 'accepted';
          this.postMessage(ep);
@@ -309,17 +342,17 @@
          if (my_ep.state == 'proposed') {
              if (! ep.checkOutputsToMe(offer.B.address, acolor, offer.A.value))
                  throw "Offer does not pay enough coins of the color I want to me";
-             ep.my_tranche = my_ep.my_tranche;
-             ep.signMyTranche(this.wallet);
+             ep.mergeWithTx(my_ep.etx);
+             ep.signMyInputs();
          } else if (my_ep.state == 'accepted') {
              if (! ep.checkOutputsToMe(offer.A.address, bcolor, offer.B.value))
                  throw "Offer does not pay enough coins of the color I want to me";
              // TODO: should we sign it again?
          } else throw "EP state is wrong in updateExchangeProposal";
          
-         if (!ep.etransaction.hasEnoughSignatures())
+         if (!ep.etx.hasEnoughSignatures())
              throw "Not all inputs are signed";
-         ep.etransaction.broadcast();
+         ep.etx.broadcast();
          this.clearOrders(my_ep);
          //TODO: on complete
          this.setActiveEP(null);
@@ -327,9 +360,11 @@
              this.postMessage(ep);
      };
      ExchangePeerAgent.prototype.postMessage = function (obj) {
+         log_event("ExchangePeerAgent.postMessage", JSON.stringify(obj.getData()));
          this.comm.postMessage(obj.getData());
      };
      ExchangePeerAgent.prototype.dispatchMessage = function (data) {
+         log_event("ExchangePeerAgent.dispatchMessage", JSON.stringify(data));
          try {
              if (data.oid) {
                  var o = new ExchangeOffer(data);
@@ -338,7 +373,7 @@
                  this.dispatchExchangeProposal(data);
              }
          } catch (x) {
-             //TODO
+             log_event('error', "error in dispatchExchangeProposal: " + x.toString());
          }
      };
 
@@ -376,9 +411,10 @@
                     data: data,
                     dataType: 'json',
                     success: function (resp) {
+                        log_event("HTTPExchangeComm.pollAndDispatch", "got " + resp.length + " objects");
                         resp.forEach(function (x) {
                                          if (x.serial && x.serial > self.lastpoll)
-                                             this.lastpoll = x.serial;
+                                             self.lastpoll = x.serial;
                                          var content = x.content;
                                          if (content && !self.own_msgids[content.msgid])
                                              self.agents.forEach(function (a) {
@@ -423,9 +459,24 @@ function test () {
                                       colorid: "2222",
                                       value: 22
                                   });
+    var or2 = new MyExchangeOffer(null, {
+                                      colorid: "2222",
+                                      value: 22
+                                  }, {
+                                      colorid: "1111",
+                                      value: 11
+                                  }, false);
     ep1.registerMyOffer(or1);
-    comm1.update();
-    comm2.update();
+    ep2.registerMyOffer(or2);
+    var i = 0;
+    var intr = 0;
+    intr = window.setInterval(function () {
+                                  comm1.update();
+                                  comm2.update();
+                                  i = i + 1;
+                                  if (i > 10)
+                                      window.clearInterval(intr);
+                              }, 1000);
     
 }
 
