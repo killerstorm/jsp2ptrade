@@ -6,48 +6,71 @@
 
      function MockExchangeTransaction (wallet, data) {
          this.wallet = wallet;
-         this.data = data;
+         this.tx = data.tx;
+         this.my = data.my;
      }
      MockExchangeTransaction.prototype.checkOutputsToMe = function (myaddress, color, value) {
-         return true;
+         var total = 0;
+         this.tx.out.forEach(function (out) {
+                                 if (out.to == myaddress && out.color == color)
+                                     total += out.value;
+                                 });
+         return (total >= value);
      };
-     MockExchangeTransaction.prototype.signMyInputs = function () {
+     MockExchangeTransaction.prototype.signMyInputs = function (reftx) {
+         var my = reftx ? reftx.my : this.my;
+         this.tx.inp.forEach(function (inp) {
+                                if (my.indexOf(inp.outpoint) >= 0)
+                                    inp.signed = true;
+                                 });
          return true;
      };
      MockExchangeTransaction.prototype.broadcast = function () {
          log_event("MockExchangeTransaction.broadcast");
+         if (!this.hasEnoughSignatures())
+             throw "trying to broadcast tx without enough signatures";
          return true;
      };
      MockExchangeTransaction.prototype.hasEnoughSignatures = function (){
+         for (var i in this.tx.inp) {
+             if (!this.tx.inp[i].signed)
+                 return false;
+         }
          return true;
      };
+     MockExchangeTransaction.prototype.appendTx = function (etx) {
+         // TODO: handle colors?
+         this.tx.inp = this.tx.inp.concat(etx.tx.inp);
+         this.tx.out = this.tx.out.concat(etx.tx.out);
+         this.my = this.my.concat(etx.my);
+     };
      MockExchangeTransaction.prototype.getData = function () {
-         return {};
+         return this.tx;
      };
      
 
-     var mockWallet = {
-         getAddress : function (colorid, is_change) {
-             return "111111111";
-         },
-         createPayment : function (color, amount, to_address) {
-             return new MockExchangeTransaction(this, 
-                                                {my_tranche: 
-                                                 {
-                                                     color:color,
-                                                     amount: amount,
-                                                     to_address: to_address
-                                                 }});
-         },
-         importTx : function (tx_data) {
-             return new MockExchangeTransaction(this, {imported_data: tx_data});
-         },
-         mergeTxs : function (etx1, etx2) {
-             return new MockExchangeTransaction(this, {etx1: etx1, etx2: etx2});
-         }
+     function MockWallet () {
+         this.id = make_random_id();
+     }
+     MockWallet.prototype.getAddress = function (colorid, is_change) {
+             return "a_" + this.id + "_" + make_random_id();
      };
-
-     
+     MockWallet.prototype.createPayment = function (color, amount, to_address) {
+         var outpoint= "o_" + this.id + "_" + make_random_id();
+         return new MockExchangeTransaction(this, 
+                                            {
+                                                tx: {inp: [{outpoint: outpoint, signed: false}],
+                                                     out: [{to: to_address, value: amount, color: color}]},
+                                                my: [outpoint]
+                                            });
+     };
+     MockWallet.prototype.importTx = function (tx_data) {
+         return new MockExchangeTransaction(this, 
+                                            {
+                                                tx: tx_data,
+                                                my: []
+                                            });
+     };
 
      function now () {
          return Math.round((new Date()).getTime()/1000);
@@ -149,20 +172,20 @@
      ExchangeProposal.prototype.importTheirs = function (data) {
          this.pid = data.pid;
          this.offer = new ExchangeOffer(data.offer);
-         this.etx = this.wallet.importTx(data.tx_data);
+         this.etx = this.wallet.importTx(data.tx);
          this.my_offer = null;
          this.state = 'imported';
      };
-     ExchangeProposal.prototype.mergeWithTx = function (etx) {
-         this.etx = this.wallet.mergeTxs(this.etx, etx);
+     ExchangeProposal.prototype.addMyTranche = function (p) {
+         this.etx.appendTx(p);
      };
      ExchangeProposal.prototype.checkOutputsToMe = function (myaddress, color, value) {
          /*  Does their tranche have enough of the color
           that I want going to my address? */
          return this.etx.checkOutputsToMe(myaddress, color, value);
      };
-     ExchangeProposal.prototype.signMyInputs = function () {
-         return this.etx.signMyInputs();
+     ExchangeProposal.prototype.signMyInputs = function (reftx) {
+         return this.etx.signMyInputs(reftx);
      };
      
 
@@ -317,9 +340,10 @@
          var acolor = resolveColor(offer.A.colorid);
          var bcolor = resolveColor(offer.B.colorid);
          if (!ep.checkOutputsToMe(offer.A.address, bcolor, offer.B.value))
-             throw "Offer does not pay enough coins of the color I want to me";
-         ep.mergeWithTx(this.wallet.createPayment(acolor, offer.A.value, offer.B.address));
-         ep.signMyInputs();
+             throw "Proposed tx does not pay enough coins of the color I want to me";
+         var p = this.wallet.createPayment(acolor, offer.A.value, offer.B.address);
+         ep.addMyTranche(p);
+         ep.signMyInputs(p);
          this.setActiveEP(ep);
          ep.state = 'accepted';
          this.postMessage(ep);
@@ -341,12 +365,11 @@
          var bcolor = resolveColor(offer.B.colorid);
          if (my_ep.state == 'proposed') {
              if (! ep.checkOutputsToMe(offer.B.address, acolor, offer.A.value))
-                 throw "Offer does not pay enough coins of the color I want to me";
-             ep.mergeWithTx(my_ep.etx);
-             ep.signMyInputs();
+                 throw "Proposed tx does not pay enough coins of the color I want to me";
+             ep.signMyInputs(my_ep.etx);
          } else if (my_ep.state == 'accepted') {
              if (! ep.checkOutputsToMe(offer.A.address, bcolor, offer.B.value))
-                 throw "Offer does not pay enough coins of the color I want to me";
+                 throw "Proposed tx does not pay enough coins of the color I want to me";
              // TODO: should we sign it again?
          } else throw "EP state is wrong in updateExchangeProposal";
          
@@ -445,11 +468,11 @@
 
 function test () {
     var comm1 = new HTTPExchangeComm('http://p2ptrade.btx.udoidio.info/messages');
-    var ep1 = new ExchangePeerAgent(mockWallet, comm1);
+    var ep1 = new ExchangePeerAgent(new MockWallet(), comm1);
     comm1.addAgent(ep1);
     
     var comm2 = new HTTPExchangeComm('http://p2ptrade.btx.udoidio.info/messages');
-    var ep2 = new ExchangePeerAgent(mockWallet, comm2);
+    var ep2 = new ExchangePeerAgent(new MockWallet(), comm2);
     comm2.addAgent(ep2);
 
     var or1 = new MyExchangeOffer(null, {
