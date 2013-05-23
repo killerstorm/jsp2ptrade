@@ -1,4 +1,3 @@
-(function () {
 
      function log_event(ekind, msg) {
          console.log("Event: " + ekind + " Msg:" + msg);
@@ -226,7 +225,11 @@
              var offer = this.my_offers[oid];
              if (offer.auto_post) {
                  if (!offer.expired(+STANDARD_OFFER_VALIDITY_INTERVAL)) continue;
-                 if (this.active_ep && this.active_ep.offer.oid == offer.oid) continue;
+                 if (this.active_ep) {
+                     if (this.active_ep.offer.oid == offer.oid) continue;
+                     if (this.active_ep.my_offer &&
+                         this.active_ep.my_offer.oid == offer.oid) continue;
+                 }
                  offer.refresh();
                  this.postMessage(offer);
              }       
@@ -503,6 +506,5 @@ function test () {
     
 }
 
-test();
+//test();
 
-})();
