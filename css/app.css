@@ -1,0 +1,17 @@
+/*!
+ * jsp2ptrade v1.0.0
+ *
+ * Copyright 2013
+ * Licensed under the Apache License v2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ */
+
+body {
+  padding-top: 60px;
+  padding-bottom: 40px;
+}
+
+.connection-area .btn {
+  margin-top: 0;
+}
